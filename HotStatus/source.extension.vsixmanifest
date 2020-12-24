@@ -5,6 +5,7 @@
         <DisplayName>Hot Status</DisplayName>
         <Description xml:space="preserve">Displays messages on the status bar from squiggles in the code (Error/Warning/Info messages)</Description>
         <ReleaseNotes>ReleaseNotes.txt</ReleaseNotes>
+        <Icon>Resources\HotStatus-icon-128.png</Icon>
     </Metadata>
     <Installation>
         <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[16.0, )" />
