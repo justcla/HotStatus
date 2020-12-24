@@ -10,7 +10,7 @@ namespace HotStatus
     using Microsoft.VisualStudio.Text;
     using Microsoft.VisualStudio.Text.Editor;
     using Microsoft.VisualStudio.Text.Tagging;
-    //using Microsoft.VisualStudio.Text.Adornments.ContainerElement;
+    using Microsoft.VisualStudio.Text.Adornments;
 
     internal sealed class ErrorStatusTracker
     {
@@ -98,14 +98,26 @@ namespace HotStatus
 
         private static string GetTextFromTagToolTip(IMappingTagSpan<IErrorTag> mappingTagSpan)
         {
-            var toolTipContent = (Microsoft.VisualStudio.Text.Adornments.ContainerElement)mappingTagSpan.Tag.ToolTipContent;
-            var textRuns = ((Microsoft.VisualStudio.Text.Adornments.ClassifiedTextElement)toolTipContent.Elements.ElementAt(0)).Runs;
+            var toolTipContent = (ContainerElement)mappingTagSpan.Tag.ToolTipContent;
+            var textRuns = ((ClassifiedTextElement)toolTipContent.Elements.ElementAt(0)).Runs;
 
-            // TODO: This can probably be written as a single line statement
             var combinedText = new StringBuilder();
-            foreach (var run in textRuns)
+
+            // If there are exactly four (4) textRuns, assume the format "CODE: Message"
+            if (textRuns.ToList().Count.Equals(4))
             {
-                combinedText.Append(run.Text);
+                // Take the 4th item only. (Zero-based index) [Code][:][ ][Message]
+                var textRun = textRuns.ElementAt(3);    // This should be the "Message" part of the Runs
+                combinedText.Append(textRun.Text);
+            }
+            // Otherwise, append all textRuns for one message
+            else
+            {
+                // TODO: This can probably be written as a single line statement
+                foreach (var run in textRuns)
+                {
+                    combinedText.Append(run.Text);
+                }
             }
             return combinedText.ToString();
         }
