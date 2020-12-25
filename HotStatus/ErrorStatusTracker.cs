@@ -82,15 +82,18 @@ namespace HotStatus
 
         private void UpdateStatusBarFromErrorTag(IMappingTagSpan<IErrorTag> mappingTagSpan)
         {
+            // Extract the message from the tool tip content (Note: Might return null)
             var errorTagContent = GetTextFromTagToolTip(mappingTagSpan);
-            if (errorTagContent != null)
-            {
-                SetStatusBarText(errorTagContent);
-            }
-            else
+
+            // Update the status bar
+            if (string.IsNullOrWhiteSpace(errorTagContent))
             {
                 // Handle the case of a Suggestion tag with no tooltip content
                 ClearStatusBarText();
+            }
+            else
+            {
+                SetStatusBarText(errorTagContent);
             }
             // Always update the Last Error Text - even if it is null
             this.factory.LastErrorText = errorTagContent;
@@ -98,9 +101,26 @@ namespace HotStatus
 
         private static string GetTextFromTagToolTip(IMappingTagSpan<IErrorTag> mappingTagSpan)
         {
-            var toolTipContent = (ContainerElement)mappingTagSpan.Tag.ToolTipContent;
-            var textRuns = ((ClassifiedTextElement)toolTipContent.Elements.ElementAt(0)).Runs;
+            // Note: There are too many things that could return NullReferenceException here
+            // so capturing any exceptions to keep it clean at this point.
+            try
+            {
+                var toolTipContent = (ContainerElement)mappingTagSpan.Tag.ToolTipContent;
+                // Note: There might be no ToolTipContent associated with this ErrorTag
+                if (toolTipContent == null) return null;
 
+                var textRuns = ((ClassifiedTextElement)toolTipContent.Elements.ElementAt(0)).Runs;
+                return ExtractMessageFromTextRuns(textRuns);
+            } catch (Exception)
+            {
+                // Note: Deliberately not sending diagnostics to debug because this action could occur too frequently (ie. every keystroke)
+                //System.Diagnostics.Debug.WriteLine("Exception occurred attempting to get error text. Message: " + e.Message);
+                return null;
+            }
+        }
+
+        private static string ExtractMessageFromTextRuns(IEnumerable<ClassifiedTextRun> textRuns)
+        {
             var combinedText = new StringBuilder();
 
             // If there are exactly four (4) textRuns, assume the format "CODE: Message"
@@ -119,7 +139,9 @@ namespace HotStatus
                     combinedText.Append(run.Text);
                 }
             }
-            return combinedText.ToString();
+
+            // Return a trimmed string
+            return combinedText.ToString().Trim();
         }
 
         private void SetStatusBarText(string errorTagContent)
