@@ -1,4 +1,5 @@
 ﻿Hot Status
 by Justin Clareburt
+26-Dec-2020 v1.0.2: Added package registration (Help->About)
 24-Dec-2020 v1.0.1: Fixed bug with empty tool tip content in error tag
 24-Dec-2020 v1.0.0: Initial release (Taken from Hot Settings 1.3.1)
