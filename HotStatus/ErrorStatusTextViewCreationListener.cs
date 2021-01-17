@@ -39,15 +39,12 @@
                 ?? throw new ArgumentNullException(nameof(unorderedErrorTypeDefinitions));
             this.ServiceProvider = serviceProvider
                 ?? throw new ArgumentNullException(nameof(serviceProvider));
-
-            //await QuickInfoItemsCollection info = quickInfoBroker.GetQuickInfoItemsAsync(textView, textView.point / posn, null);
-            //.continueWith
-            //    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
         }
 
         public void TextViewCreated(IWpfTextView textView)
         {
-            var errorStatusTracker = new ErrorStatusTracker(textView, quickInfoBroker, this);
+            // TODO: Fix this.
+            new ErrorStatusTracker(textView, quickInfoBroker, this);
         }
 
         // Lazily sort all defined ErrorTypes by their precedence.

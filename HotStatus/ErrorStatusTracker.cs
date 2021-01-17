@@ -11,7 +11,6 @@
     using Microsoft.VisualStudio.Text.Adornments;
     using Microsoft.VisualStudio.Language.Intellisense;
     using System.Threading;
-    using Microsoft.VisualStudio.Threading;
     using System.Threading.Tasks;
 
     internal sealed class ErrorStatusTracker
@@ -20,8 +19,7 @@
         private readonly ErrorStatusTextViewCreationListener factory;
         private readonly ITagAggregator<IErrorTag> errorTagAggregator;
         private readonly IAsyncQuickInfoBroker quickInfoBroker;
-
-        //public static void Attach(IWpfTextView textView, ErrorStatusTextViewCreationListener factory) => new ErrorStatusTracker(textView, factory);
+        private HotStatusOptions optionsPage;
 
         public ErrorStatusTracker(IWpfTextView textView, IAsyncQuickInfoBroker quickInfoBroker, ErrorStatusTextViewCreationListener factory)
         {
@@ -46,43 +44,66 @@
 
         //private void OnGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => this.UpdateStatusBarInfo();
 
+        private HotStatusOptions Options
+        {
+            get
+            {
+                if (optionsPage == null)
+                {
+                    optionsPage = HotStatusOptions.Instance;
+                }
+                return optionsPage;
+            }
+        }
+
+        private bool ShouldShowErrorInfo { get { return HotStatusOptions.Instance.ShowErrorInfo; } }
+        private bool ShouldShowSymbolInfo { get { return HotStatusOptions.Instance.ShowSymbolInfo; } }
+
         private async Task UpdateStatusBarInfoAsync()
         {
+            // Fail out early if the user flags are disabled
+            if (!(ShouldShowErrorInfo || ShouldShowSymbolInfo)) return;
+
             // Algorithm for updating status bar text:
             // 1. If there are error tags, show the highest priority error
             // 2. Otherwise, show any current symbol info
             // 3. Otherwise, clear the status bar
 
             var caretBufferPosn = this.textView.Caret.Position.BufferPosition;
-            int caretPosnInt = caretBufferPosn.Position;
 
             // Option 1: Get all error tags that intersect with the caret.
-            SnapshotSpan currentSnapshotSpan = new SnapshotSpan(caretBufferPosn, 0);
-            var errorTagList = this.errorTagAggregator.GetTags(currentSnapshotSpan).ToList();
-            if (errorTagList.Count > 0)
+            if (ShouldShowErrorInfo)
             {
-                // Error tags exist at this location
-                ShowErrorTagInfo(errorTagList);
-                return;
+                SnapshotSpan currentSnapshotSpan = new SnapshotSpan(caretBufferPosn, 0);
+                var errorTagList = this.errorTagAggregator.GetTags(currentSnapshotSpan).ToList();
+                if (errorTagList.Count > 0)
+                {
+                    // Error tags exist at this location
+                    ShowErrorTagInfo(errorTagList);
+                    return;
+                }
             }
 
             // Option 2: Show current symbol info (ie. method signature, parameter info, variable type)
-
-            ITrackingPoint trackingPoint = caretBufferPosn.Snapshot.CreateTrackingPoint(caretPosnInt, PointTrackingMode.Positive);
-            CancellationToken cancellationToken = new CancellationToken();
-            // TODO: Run asynchronously
-            Task<QuickInfoItemsCollection> task = quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
-            QuickInfoItemsCollection info = await task;
-            if (info != null)
+            if (ShouldShowSymbolInfo)
             {
-                IEnumerable<object> infoItems = info.Items;
-                List<object> itemsList = infoItems.ToList();
-                if (itemsList[0] is ContainerElement containerElem)
+                int caretPosnInt = caretBufferPosn.Position;
+                ITrackingPoint trackingPoint = caretBufferPosn.Snapshot.CreateTrackingPoint(caretPosnInt, PointTrackingMode.Positive);
+                CancellationToken cancellationToken = new CancellationToken();
+                // TODO: Run asynchronously
+                Task<QuickInfoItemsCollection> task = quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
+                QuickInfoItemsCollection info = await task;
+                if (info != null)
                 {
-                    ContainerElement containerWithImageAndText = GetContainerElementWithImageAndText(containerElem);
-                    string rawText = GetTextFromContainer(containerWithImageAndText);
-                    UpdateStatusBarText(rawText);
-                    return;
+                    IEnumerable<object> infoItems = info.Items;
+                    List<object> itemsList = infoItems.ToList();
+                    if (itemsList[0] is ContainerElement containerElem)
+                    {
+                        ContainerElement containerWithImageAndText = GetContainerElementWithImageAndText(containerElem);
+                        string rawText = GetTextFromContainer(containerWithImageAndText);
+                        UpdateStatusBarText(rawText);
+                        return;
+                    }
                 }
             }
 

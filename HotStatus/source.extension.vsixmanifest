@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
     <Metadata>
-        <Identity Id="HotStatus.JustinClareburt.19ee5266-2c00-4c8e-b16b-b9b797ecda0b" Version="1.0.2" Language="en-US" Publisher="Justin Clareburt" />
+        <Identity Id="HotStatus.JustinClareburt.19ee5266-2c00-4c8e-b16b-b9b797ecda0b" Version="1.1.2" Language="en-US" Publisher="Justin Clareburt" />
         <DisplayName>Hot Status</DisplayName>
-        <Description xml:space="preserve">Displays error information on the status bar when caret is on squiggles in the code.
-Includes error, warning, and info messages.</Description>
+        <Description xml:space="preserve">Displays information on the status bar when caret is on squiggles or symbols in the code.
+Includes error, warning, and info messages. Also shows QuickInfo symbol info.</Description>
+        <MoreInfo>https://marketplace.visualstudio.com/items?itemName=JustinClareburtMSFT.HotStatus</MoreInfo>
         <ReleaseNotes>ReleaseNotes.txt</ReleaseNotes>
         <Icon>Resources\HotStatus-icon-128.png</Icon>
     </Metadata>
