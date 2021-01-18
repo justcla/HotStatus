@@ -1,73 +1,175 @@
-﻿using System.Collections.Generic;
-
-namespace HotStatus
+﻿namespace HotStatus
 {
     using System;
+    using System.Collections.Generic;
     using System.Linq;
     using System.Runtime.InteropServices;
     using System.Text;
-    using System.Windows.Input;
     using Microsoft.VisualStudio.Text;
     using Microsoft.VisualStudio.Text.Editor;
     using Microsoft.VisualStudio.Text.Tagging;
     using Microsoft.VisualStudio.Text.Adornments;
+    using Microsoft.VisualStudio.Language.Intellisense;
+    using System.Threading;
+    using System.Threading.Tasks;
 
     internal sealed class ErrorStatusTracker
     {
         private readonly IWpfTextView textView;
         private readonly ErrorStatusTextViewCreationListener factory;
         private readonly ITagAggregator<IErrorTag> errorTagAggregator;
+        private readonly IAsyncQuickInfoBroker quickInfoBroker;
+        private HotStatusOptions optionsPage;
 
-        public static void Attach(IWpfTextView textView, ErrorStatusTextViewCreationListener factory) => new ErrorStatusTracker(textView, factory);
-
-        private ErrorStatusTracker(
-            IWpfTextView textView,
-            ErrorStatusTextViewCreationListener factory)
+        public ErrorStatusTracker(IWpfTextView textView, IAsyncQuickInfoBroker quickInfoBroker, ErrorStatusTextViewCreationListener factory)
         {
             this.textView = textView;
+            this.quickInfoBroker = quickInfoBroker;
             this.factory = factory;
 
+            // Set the event listeners
+            // - BatchedTagsChanged
             this.errorTagAggregator = factory.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
             this.errorTagAggregator.BatchedTagsChanged += this.OnBatchedTagsChanged;
-
+            // - CaretPositionChanged
             textView.Closed += OnTextViewClosed;
             textView.Caret.PositionChanged += this.OnCaretPositionChanged;
+            // - GotKeyboardFocus
             //textView.VisualElement.GotKeyboardFocus += this.OnGotKeyboardFocus;
         }
 
-        private void OnBatchedTagsChanged(object sender, BatchedTagsChangedEventArgs e) => this.ShowErrorTagContentAtCaret();
+        private void OnBatchedTagsChanged(object sender, BatchedTagsChangedEventArgs e) => this.UpdateStatusBarInfoAsync().ConfigureAwait(true);
 
-        private void OnCaretPositionChanged(object sender, CaretPositionChangedEventArgs e) => this.ShowErrorTagContentAtCaret();
+        private void OnCaretPositionChanged(object sender, CaretPositionChangedEventArgs e) => this.UpdateStatusBarInfoAsync().ConfigureAwait(true);
 
-        private void OnGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => this.ShowErrorTagContentAtCaret();
+        //private void OnGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => this.UpdateStatusBarInfo();
 
-        private void ShowErrorTagContentAtCaret()
+        private HotStatusOptions Options
         {
-            // Get all error tags that intersect with the caret.
-            var caretPosition = this.textView.Caret.Position.BufferPosition;
-            var errorTagsAtCaret = this.errorTagAggregator.GetTags(new SnapshotSpan(caretPosition, 0));
+            get
+            {
+                if (optionsPage == null)
+                {
+                    optionsPage = HotStatusOptions.Instance;
+                }
+                return optionsPage;
+            }
+        }
 
+        private bool ShouldShowErrorInfo { get { return HotStatusOptions.Instance.ShowErrorInfo; } }
+        private bool ShouldShowSymbolInfo { get { return HotStatusOptions.Instance.ShowSymbolInfo; } }
+
+        private async Task UpdateStatusBarInfoAsync()
+        {
+            // Fail out early if the user flags are disabled
+            if (!(ShouldShowErrorInfo || ShouldShowSymbolInfo)) return;
+
+            // Algorithm for updating status bar text:
+            // 1. If there are error tags, show the highest priority error
+            // 2. Otherwise, show any current symbol info
+            // 3. Otherwise, clear the status bar
+
+            var caretBufferPosn = this.textView.Caret.Position.BufferPosition;
+
+            // Option 1: Get all error tags that intersect with the caret.
+            if (ShouldShowErrorInfo)
+            {
+                SnapshotSpan currentSnapshotSpan = new SnapshotSpan(caretBufferPosn, 0);
+                var errorTagList = this.errorTagAggregator.GetTags(currentSnapshotSpan).ToList();
+                if (errorTagList.Count > 0)
+                {
+                    // Error tags exist at this location
+                    ShowErrorTagInfo(errorTagList);
+                    return;
+                }
+            }
+
+            // Option 2: Show current symbol info (ie. method signature, parameter info, variable type)
+            if (ShouldShowSymbolInfo)
+            {
+                int caretPosnInt = caretBufferPosn.Position;
+                ITrackingPoint trackingPoint = caretBufferPosn.Snapshot.CreateTrackingPoint(caretPosnInt, PointTrackingMode.Positive);
+                CancellationToken cancellationToken = new CancellationToken();
+                // TODO: Run asynchronously
+                Task<QuickInfoItemsCollection> task = quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
+                QuickInfoItemsCollection info = await task;
+                if (info != null)
+                {
+                    IEnumerable<object> infoItems = info.Items;
+                    List<object> itemsList = infoItems.ToList();
+                    if (itemsList[0] is ContainerElement containerElem)
+                    {
+                        ContainerElement containerWithImageAndText = GetContainerElementWithImageAndText(containerElem);
+                        string rawText = GetTextFromContainer(containerWithImageAndText);
+                        UpdateStatusBarText(rawText);
+                        return;
+                    }
+                }
+            }
+
+            // Option 3: No info to display
+            ClearStatusBarText();
+        }
+
+        private string GetTextFromContainer(ContainerElement containerWithImageAndText)
+        {
+            if (containerWithImageAndText?.Elements == null) return null;
+
+            List<object> elemList = containerWithImageAndText.Elements.ToList();
+
+            StringBuilder combinedText = new StringBuilder();
+
+            if (elemList[1] is ClassifiedTextElement classifiedText)
+            {
+                IEnumerable<ClassifiedTextRun> runs = classifiedText.Runs;
+
+                // TODO: This can probably be written as a single line statement
+                foreach (var run in runs)
+                {
+                    combinedText.Append(run.Text);
+                }
+
+                string returnText = combinedText.ToString().Trim();
+
+                return returnText;
+            }
+
+            return null;
+        }
+
+        private ContainerElement GetContainerElementWithImageAndText(ContainerElement containerElem)
+        {
+            if (containerElem?.Elements == null) return null;
+
+            List<object> elems = containerElem.Elements.ToList();
+            
+            object firstElem = elems[0];
+
+            // Is this another container?
+            if (firstElem is ContainerElement nextContainerElem) {
+                return GetContainerElementWithImageAndText(nextContainerElem);
+            } 
+
+            // Check if the first element is an image - If so, the second elem contains the text we want
+            if (firstElem is ImageElement && elems[1] is ClassifiedTextElement)
+            {
+                // Return this element
+                return containerElem;
+            }
+
+            return null;
+        }
+
+        private void ShowErrorTagInfo(List<IMappingTagSpan<IErrorTag>> errorTagList)
+        {
             // Optimisation: ErrorTags list is usually empty (or one). List of known error types is 6+ items.
             // Therefore, avoid iterating through the error type list where possible.
             // Convert the enum to list so we can easily see if it's empty or one.
             // Only where there are more than one ErrorTag do we need to sort by priority.
-            var errorTagList = errorTagsAtCaret.ToList();
-            switch (errorTagList.Count)
-            {
-                case 0:
-                    // No error tag at caret location. Clear the status bar.
-                    ClearStatusBarText();
-                    return;
-                case 1:
-                    // Only one error tag at this location. Show it on the status bar.
-                    this.UpdateStatusBarFromErrorTag(errorTagList[0]);
-                    return;
-                default:
-                    // More than one error tag. Show highest priority error.
-                    var highestPriorityErrorTag = GetHighestPriorityErrorTag(errorTagList);
-                    this.UpdateStatusBarFromErrorTag(highestPriorityErrorTag);
-                    return;
-            }
+            // If more than one error tag. Show highest priority error.
+            IMappingTagSpan<IErrorTag> mappingTagSpan = (errorTagList.Count > 1) ? GetHighestPriorityErrorTag(errorTagList) : errorTagList[0];
+
+            this.UpdateStatusBarFromErrorTag(mappingTagSpan);
         }
 
         private IMappingTagSpan<IErrorTag> GetHighestPriorityErrorTag(List<IMappingTagSpan<IErrorTag>> mappingTagSpans)
@@ -83,20 +185,25 @@ namespace HotStatus
         private void UpdateStatusBarFromErrorTag(IMappingTagSpan<IErrorTag> mappingTagSpan)
         {
             // Extract the message from the tool tip content (Note: Might return null)
-            var errorTagContent = GetTextFromTagToolTip(mappingTagSpan);
+            string errorTagContent = GetTextFromTagToolTip(mappingTagSpan);
 
             // Update the status bar
-            if (string.IsNullOrWhiteSpace(errorTagContent))
+            UpdateStatusBarText(errorTagContent);
+        }
+
+        private void UpdateStatusBarText(string newText)
+        {
+            if (string.IsNullOrWhiteSpace(newText))
             {
                 // Handle the case of a Suggestion tag with no tooltip content
                 ClearStatusBarText();
             }
             else
             {
-                SetStatusBarText(errorTagContent);
+                SetStatusBarText(newText);
             }
             // Always update the Last Error Text - even if it is null
-            this.factory.LastErrorText = errorTagContent;
+            this.factory.LastStatusBarText = newText;
         }
 
         private static string GetTextFromTagToolTip(IMappingTagSpan<IErrorTag> mappingTagSpan)
@@ -144,30 +251,30 @@ namespace HotStatus
             return combinedText.ToString().Trim();
         }
 
-        private void SetStatusBarText(string errorTagContent)
+        private void SetStatusBarText(string textToDisplay)
         {
             // Don't set the status bar text if it's already set.
             // Note: Costs a GetText operation. Is this faster than SetText?
             Marshal.ThrowExceptionForHR(this.factory.StatusBarService.GetText(out string currentStatusBarText));
-            if (currentStatusBarText.Equals(errorTagContent)) return;
+            if (currentStatusBarText.Equals(textToDisplay)) return;
 
-            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.SetText(errorTagContent));
-            this.factory.LastErrorText = errorTagContent;
+            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.SetText(textToDisplay));
+            this.factory.LastStatusBarText = textToDisplay;
         }
 
         private void ClearStatusBarText()
         {
             // Don't bother clearing the status bar if we didn't set anything
-            if (string.IsNullOrEmpty(this.factory.LastErrorText)) return;
+            if (string.IsNullOrEmpty(this.factory.LastStatusBarText)) return;
 
             // Don't clear the status bar if there's nothing in it or if it's not the last error text
             Marshal.ThrowExceptionForHR(this.factory.StatusBarService.GetText(out string currentStatusBarText));
             if (string.IsNullOrEmpty(currentStatusBarText) ||
-                !string.Equals(currentStatusBarText, this.factory.LastErrorText)) return;
+                !string.Equals(currentStatusBarText, this.factory.LastStatusBarText)) return;
 
             // The text in the status bar is the text last set. Can safely clear it.
             Marshal.ThrowExceptionForHR(this.factory.StatusBarService.Clear());
-            this.factory.LastErrorText = null;
+            this.factory.LastStatusBarText = null;
         }
 
         private void OnTextViewClosed(object sender, System.EventArgs e)

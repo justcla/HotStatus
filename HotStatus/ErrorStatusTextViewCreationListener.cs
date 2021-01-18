@@ -3,6 +3,7 @@
     using System;
     using System.Collections.Generic;
     using System.ComponentModel.Composition;
+    using Microsoft.VisualStudio.Language.Intellisense;
     using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
     using Microsoft.VisualStudio.Text.Adornments;
@@ -23,6 +24,9 @@
         private IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> orderedErrorTypeDefinitions;
         private IVsStatusbar statusBarService;
 
+        [Import]
+        internal IAsyncQuickInfoBroker quickInfoBroker;
+
         [ImportingConstructor]
         public ErrorStatusTextViewCreationListener(
             IBufferTagAggregatorFactoryService tagAggregatorFactoryService,
@@ -39,8 +43,8 @@
 
         public void TextViewCreated(IWpfTextView textView)
         {
-            // Looks weird, but ErrorStatusTracker tracks its own lifetime.
-            ErrorStatusTracker.Attach(textView, this);
+            // TODO: Fix this.
+            new ErrorStatusTracker(textView, quickInfoBroker, this);
         }
 
         // Lazily sort all defined ErrorTypes by their precedence.
@@ -51,6 +55,6 @@
             ?? (this.statusBarService = this.ServiceProvider.GetService(typeof(SVsStatusbar)) as IVsStatusbar);
 
         // Keep track of the last error message added to the status bar so we don't clear other messages.
-        internal string LastErrorText { get; set; }
+        internal string LastStatusBarText { get; set; }
     }
 }
