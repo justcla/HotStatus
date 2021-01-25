@@ -97,6 +97,8 @@ Extensions → Manage **Extensions**
 
 Search (Ctrl+E)
 
+![image](https://user-images.githubusercontent.com/17131343/105684140-4c71bc80-5f40-11eb-8e6a-f6e2b2da5c5d.png)
+
 **Hot Status**
 By Justin Clareburt
 
@@ -104,3 +106,4 @@ Available on the [**Visual Studio Marketplace**](
 https://marketplace.visualstudio.com/items?itemName=JustinClareburtMSFT.HotStatus)
 
 Search for “Hot Status”
+![image](https://user-images.githubusercontent.com/17131343/105684413-a83c4580-5f40-11eb-9d66-da44361c17dd.png)
