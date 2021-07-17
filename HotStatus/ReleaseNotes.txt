@@ -1,5 +1,6 @@
 ﻿Hot Status
 by Justin Clareburt
+18-Jul-2021 v1.2.0: Upgraded to VS2021
 17-Jan-2021 v1.1.2: Options page included to toggle settings to ShowErrorInfo and ShowSymbolInfo
 15-Jan-2021 v1.1.0: Now shows QuickInfo on status bar when there are no errors
 26-Dec-2020 v1.0.2: Added package registration (Help->About)
