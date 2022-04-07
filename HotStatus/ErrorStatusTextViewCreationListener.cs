@@ -7,6 +7,7 @@
     using Microsoft.VisualStudio.Shell;
     using Microsoft.VisualStudio.Shell.Interop;
     using Microsoft.VisualStudio.Text.Adornments;
+    using Microsoft.VisualStudio.Text.Classification;
     using Microsoft.VisualStudio.Text.Editor;
     using Microsoft.VisualStudio.Text.Tagging;
     using Microsoft.VisualStudio.Utilities;
@@ -27,6 +28,9 @@
         [Import]
         internal IAsyncQuickInfoBroker quickInfoBroker;
 
+        [Import]
+        private IClassifierAggregatorService classifierAggregatorService;
+
         [ImportingConstructor]
         public ErrorStatusTextViewCreationListener(
             IBufferTagAggregatorFactoryService tagAggregatorFactoryService,
@@ -44,7 +48,7 @@
         public void TextViewCreated(IWpfTextView textView)
         {
             // TODO: Fix this.
-            new ErrorStatusTracker(textView, quickInfoBroker, this);
+            new ErrorStatusTracker(textView, quickInfoBroker, classifierAggregatorService, this);
         }
 
         // Lazily sort all defined ErrorTypes by their precedence.

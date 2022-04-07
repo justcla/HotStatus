@@ -9,6 +9,8 @@
     using Microsoft.VisualStudio.Text.Editor;
     using Microsoft.VisualStudio.Text.Tagging;
     using Microsoft.VisualStudio.Text.Adornments;
+    using Microsoft.VisualStudio.Text.Classification;
+    using Microsoft.VisualStudio.Language.StandardClassification;
     using Microsoft.VisualStudio.Language.Intellisense;
     using System.Threading;
     using System.Threading.Tasks;
@@ -16,20 +18,25 @@
     internal sealed class ErrorStatusTracker
     {
         private readonly IWpfTextView textView;
-        private readonly ErrorStatusTextViewCreationListener factory;
+        private readonly ErrorStatusTextViewCreationListener textCreationListener;
         private readonly ITagAggregator<IErrorTag> errorTagAggregator;
         private readonly IAsyncQuickInfoBroker quickInfoBroker;
+        private readonly IClassifier classifier;
         private HotStatusOptions optionsPage;
 
-        public ErrorStatusTracker(IWpfTextView textView, IAsyncQuickInfoBroker quickInfoBroker, ErrorStatusTextViewCreationListener factory)
+        public ErrorStatusTracker(IWpfTextView textView, IAsyncQuickInfoBroker quickInfoBroker, 
+            IClassifierAggregatorService classifierAggregatorService, ErrorStatusTextViewCreationListener textCreationListener)
         {
             this.textView = textView;
             this.quickInfoBroker = quickInfoBroker;
-            this.factory = factory;
+            this.textCreationListener = textCreationListener;
+
+            // Set the classifier based on the textView
+            this.classifier = classifierAggregatorService.GetClassifier(textView.TextBuffer);
 
             // Set the event listeners
             // - BatchedTagsChanged
-            this.errorTagAggregator = factory.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
+            this.errorTagAggregator = textCreationListener.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
             this.errorTagAggregator.BatchedTagsChanged += this.OnBatchedTagsChanged;
             // - CaretPositionChanged
             textView.Closed += OnTextViewClosed;
@@ -69,7 +76,7 @@
             // 2. Otherwise, show any current symbol info
             // 3. Otherwise, clear the status bar
 
-            var caretBufferPosn = this.textView.Caret.Position.BufferPosition;
+            SnapshotPoint caretBufferPosn = this.textView.Caret.Position.BufferPosition;
 
             // Option 1: Get all error tags that intersect with the caret.
             if (ShouldShowErrorInfo)
@@ -89,6 +96,17 @@
             {
                 int caretPosnInt = caretBufferPosn.Position;
                 ITrackingPoint trackingPoint = caretBufferPosn.Snapshot.CreateTrackingPoint(caretPosnInt, PointTrackingMode.Positive);
+
+                // Fix for Issue #4 - Error noise when clicking on C++ comment.
+                // Problem: Microsoft.VisualStudio.Language.Intellisense.GetQuickInfoItemsAsync sounds an error when calling this on a C++ comment.
+                // Solution: Don't call GetQuickInfoItemsAsync when the caret is on a comment. Just clear the StatusBar instead.
+                // If this is a comment, clear the status bar text and exit
+                if (IsCaretOnAComment())
+                {
+                    ClearStatusBarText();
+                    return;
+                }
+
                 CancellationToken cancellationToken = new CancellationToken();
                 // TODO: Run asynchronously
                 Task<QuickInfoItemsCollection> task = quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
@@ -109,6 +127,27 @@
 
             // Option 3: No info to display
             ClearStatusBarText();
+        }
+
+        private bool IsCaretOnAComment()
+        {
+            // Check a one-char span starting from the caret position
+            SnapshotSpan spanToCheck = new SnapshotSpan(textView.Caret.Position.BufferPosition, 1);
+
+            // Check if the span is on a comment
+            IList<ClassificationSpan> classificationSpans = classifier.GetClassificationSpans(spanToCheck);
+            foreach (var classification in classificationSpans)
+            {
+                var name = classification.ClassificationType.Classification.ToLower();
+                // If any of the classifications are a comment - then the caret is on a comment. Return true!
+                if (name.Contains(PredefinedClassificationTypeNames.Comment))
+                {
+                    return true;
+                }
+            }
+
+            // No comment found - return false
+            return false;
         }
 
         private string GetTextFromContainer(ContainerElement containerWithImageAndText)
@@ -175,7 +214,7 @@
         private IMappingTagSpan<IErrorTag> GetHighestPriorityErrorTag(List<IMappingTagSpan<IErrorTag>> mappingTagSpans)
         {
             // Get first, highest priority error tag.
-            return this.factory.OrderedErrorTypeDefinitions
+            return this.textCreationListener.OrderedErrorTypeDefinitions
                 .Select(errorTypeDefinition => mappingTagSpans.FirstOrDefault(tag =>
                     string.Equals(tag.Tag.ErrorType, errorTypeDefinition.Metadata.Name,
                         StringComparison.OrdinalIgnoreCase)))
@@ -203,7 +242,7 @@
                 SetStatusBarText(newText);
             }
             // Always update the Last Error Text - even if it is null
-            this.factory.LastStatusBarText = newText;
+            this.textCreationListener.LastStatusBarText = newText;
         }
 
         private static string GetTextFromTagToolTip(IMappingTagSpan<IErrorTag> mappingTagSpan)
@@ -255,26 +294,26 @@
         {
             // Don't set the status bar text if it's already set.
             // Note: Costs a GetText operation. Is this faster than SetText?
-            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.GetText(out string currentStatusBarText));
+            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
             if (currentStatusBarText.Equals(textToDisplay)) return;
 
-            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.SetText(textToDisplay));
-            this.factory.LastStatusBarText = textToDisplay;
+            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.SetText(textToDisplay));
+            this.textCreationListener.LastStatusBarText = textToDisplay;
         }
 
         private void ClearStatusBarText()
         {
             // Don't bother clearing the status bar if we didn't set anything
-            if (string.IsNullOrEmpty(this.factory.LastStatusBarText)) return;
+            if (string.IsNullOrEmpty(this.textCreationListener.LastStatusBarText)) return;
 
             // Don't clear the status bar if there's nothing in it or if it's not the last error text
-            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.GetText(out string currentStatusBarText));
+            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
             if (string.IsNullOrEmpty(currentStatusBarText) ||
-                !string.Equals(currentStatusBarText, this.factory.LastStatusBarText)) return;
+                !string.Equals(currentStatusBarText, this.textCreationListener.LastStatusBarText)) return;
 
             // The text in the status bar is the text last set. Can safely clear it.
-            Marshal.ThrowExceptionForHR(this.factory.StatusBarService.Clear());
-            this.factory.LastStatusBarText = null;
+            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.Clear());
+            this.textCreationListener.LastStatusBarText = null;
         }
 
         private void OnTextViewClosed(object sender, System.EventArgs e)
