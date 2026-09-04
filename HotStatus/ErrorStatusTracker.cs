@@ -36,7 +36,12 @@
 
             // Set the event listeners
             // - BatchedTagsChanged
-            this.errorTagAggregator = textCreationListener.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
+            // Use the VIEW-level aggregator rather than the buffer-level one: it's a documented
+            // superset that also includes tags from any IViewTaggerProvider-exported taggers, which
+            // is where some hosts now register their squiggle/diagnostics tagger instead of the
+            // classic buffer-scoped ITaggerProvider that CreateTagAggregator(textView.TextBuffer)
+            // alone would see.
+            this.errorTagAggregator = textCreationListener.ViewTagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView);
             this.errorTagAggregator.BatchedTagsChanged += this.OnBatchedTagsChanged;
             // - CaretPositionChanged
             textView.Closed += OnTextViewClosed;
@@ -292,12 +297,27 @@
 
         private void SetStatusBarText(string textToDisplay)
         {
+            var statusBar = this.textCreationListener.StatusBarService;
+
+            // The status bar can be silently overwritten by other VS operations (background
+            // indexing, Copilot status, etc.) unless we freeze it after writing. Unfreeze first
+            // in case a previous call left it frozen, so our new text can actually be applied.
+            Marshal.ThrowExceptionForHR(statusBar.IsFrozen(out int frozen));
+            if (frozen != 0)
+            {
+                Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(0));
+            }
+
             // Don't set the status bar text if it's already set.
             // Note: Costs a GetText operation. Is this faster than SetText?
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
-            if (currentStatusBarText.Equals(textToDisplay)) return;
+            Marshal.ThrowExceptionForHR(statusBar.GetText(out string currentStatusBarText));
+            if (!currentStatusBarText.Equals(textToDisplay))
+            {
+                Marshal.ThrowExceptionForHR(statusBar.SetText(textToDisplay));
+            }
 
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.SetText(textToDisplay));
+            // Freeze the status bar so our text sticks until we explicitly change it again.
+            Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(1));
             this.textCreationListener.LastStatusBarText = textToDisplay;
         }
 
@@ -306,13 +326,22 @@
             // Don't bother clearing the status bar if we didn't set anything
             if (string.IsNullOrEmpty(this.textCreationListener.LastStatusBarText)) return;
 
+            var statusBar = this.textCreationListener.StatusBarService;
+
+            // Unfreeze before checking/clearing - we may have frozen it ourselves in SetStatusBarText.
+            Marshal.ThrowExceptionForHR(statusBar.IsFrozen(out int frozen));
+            if (frozen != 0)
+            {
+                Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(0));
+            }
+
             // Don't clear the status bar if there's nothing in it or if it's not the last error text
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
+            Marshal.ThrowExceptionForHR(statusBar.GetText(out string currentStatusBarText));
             if (string.IsNullOrEmpty(currentStatusBarText) ||
                 !string.Equals(currentStatusBarText, this.textCreationListener.LastStatusBarText)) return;
 
             // The text in the status bar is the text last set. Can safely clear it.
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.Clear());
+            Marshal.ThrowExceptionForHR(statusBar.Clear());
             this.textCreationListener.LastStatusBarText = null;
         }
 

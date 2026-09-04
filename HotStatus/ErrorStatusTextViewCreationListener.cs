@@ -19,6 +19,7 @@
     internal sealed class ErrorStatusTextViewCreationListener : IWpfTextViewCreationListener
     {
         internal readonly IBufferTagAggregatorFactoryService TagAggregatorFactoryService;
+        internal readonly IViewTagAggregatorFactoryService ViewTagAggregatorFactoryService;
         internal readonly IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> UnorderedErrorTypeDefinition;
         internal readonly SVsServiceProvider ServiceProvider;
 
@@ -34,11 +35,14 @@
         [ImportingConstructor]
         public ErrorStatusTextViewCreationListener(
             IBufferTagAggregatorFactoryService tagAggregatorFactoryService,
+            IViewTagAggregatorFactoryService viewTagAggregatorFactoryService,
             [ImportMany] IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> unorderedErrorTypeDefinitions,
             SVsServiceProvider serviceProvider)
         {
             this.TagAggregatorFactoryService = tagAggregatorFactoryService
                 ?? throw new ArgumentNullException(nameof(tagAggregatorFactoryService));
+            this.ViewTagAggregatorFactoryService = viewTagAggregatorFactoryService
+                ?? throw new ArgumentNullException(nameof(viewTagAggregatorFactoryService));
             this.UnorderedErrorTypeDefinition = unorderedErrorTypeDefinitions
                 ?? throw new ArgumentNullException(nameof(unorderedErrorTypeDefinitions));
             this.ServiceProvider = serviceProvider
