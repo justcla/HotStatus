@@ -25,6 +25,7 @@
 
         private IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> orderedErrorTypeDefinitions;
         private IVsStatusbar statusBarService;
+        private IErrorList errorListService;
 
         [Import]
         internal IAsyncQuickInfoBroker quickInfoBroker;
@@ -61,6 +62,11 @@
 
         internal IVsStatusbar StatusBarService => this.statusBarService
             ?? (this.statusBarService = this.ServiceProvider.GetService(typeof(SVsStatusbar)) as IVsStatusbar);
+
+        // Last-resort source of error/warning text for hosts (e.g. SQL) whose ErrorTag leaves
+        // ToolTipContent empty and doesn't participate in the async QuickInfo broker either.
+        internal IErrorList ErrorListService => this.errorListService
+            ?? (this.errorListService = this.ServiceProvider.GetService(typeof(SVsErrorList)) as IErrorList);
 
         // Keep track of the last error message added to the status bar so we don't clear other messages.
         internal string LastStatusBarText { get; set; }
