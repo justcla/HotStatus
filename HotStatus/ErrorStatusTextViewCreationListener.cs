@@ -19,11 +19,13 @@
     internal sealed class ErrorStatusTextViewCreationListener : IWpfTextViewCreationListener
     {
         internal readonly IBufferTagAggregatorFactoryService TagAggregatorFactoryService;
+        internal readonly IViewTagAggregatorFactoryService ViewTagAggregatorFactoryService;
         internal readonly IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> UnorderedErrorTypeDefinition;
         internal readonly SVsServiceProvider ServiceProvider;
 
         private IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> orderedErrorTypeDefinitions;
         private IVsStatusbar statusBarService;
+        private IErrorList errorListService;
 
         [Import]
         internal IAsyncQuickInfoBroker quickInfoBroker;
@@ -34,11 +36,14 @@
         [ImportingConstructor]
         public ErrorStatusTextViewCreationListener(
             IBufferTagAggregatorFactoryService tagAggregatorFactoryService,
+            IViewTagAggregatorFactoryService viewTagAggregatorFactoryService,
             [ImportMany] IEnumerable<Lazy<ErrorTypeDefinition, IOrderable>> unorderedErrorTypeDefinitions,
             SVsServiceProvider serviceProvider)
         {
             this.TagAggregatorFactoryService = tagAggregatorFactoryService
                 ?? throw new ArgumentNullException(nameof(tagAggregatorFactoryService));
+            this.ViewTagAggregatorFactoryService = viewTagAggregatorFactoryService
+                ?? throw new ArgumentNullException(nameof(viewTagAggregatorFactoryService));
             this.UnorderedErrorTypeDefinition = unorderedErrorTypeDefinitions
                 ?? throw new ArgumentNullException(nameof(unorderedErrorTypeDefinitions));
             this.ServiceProvider = serviceProvider
@@ -57,6 +62,11 @@
 
         internal IVsStatusbar StatusBarService => this.statusBarService
             ?? (this.statusBarService = this.ServiceProvider.GetService(typeof(SVsStatusbar)) as IVsStatusbar);
+
+        // Last-resort source of error/warning text for hosts (e.g. SQL) whose ErrorTag leaves
+        // ToolTipContent empty and doesn't participate in the async QuickInfo broker either.
+        internal IErrorList ErrorListService => this.errorListService
+            ?? (this.errorListService = this.ServiceProvider.GetService(typeof(SVsErrorList)) as IErrorList);
 
         // Keep track of the last error message added to the status bar so we don't clear other messages.
         internal string LastStatusBarText { get; set; }

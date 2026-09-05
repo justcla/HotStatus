@@ -12,14 +12,19 @@
     using Microsoft.VisualStudio.Text.Classification;
     using Microsoft.VisualStudio.Language.StandardClassification;
     using Microsoft.VisualStudio.Language.Intellisense;
+    using Microsoft.VisualStudio.Shell;
+    using Microsoft.VisualStudio.Shell.TableControl;
+    using Microsoft.VisualStudio.Shell.TableManager;
     using System.Threading;
     using System.Threading.Tasks;
+    using Task = System.Threading.Tasks.Task;
 
     internal sealed class ErrorStatusTracker
     {
         private readonly IWpfTextView textView;
         private readonly ErrorStatusTextViewCreationListener textCreationListener;
         private readonly ITagAggregator<IErrorTag> errorTagAggregator;
+        private readonly ITagAggregator<IErrorTag> bufferErrorTagAggregator;
         private readonly IAsyncQuickInfoBroker quickInfoBroker;
         private readonly IClassifier classifier;
         private HotStatusOptions optionsPage;
@@ -36,8 +41,15 @@
 
             // Set the event listeners
             // - BatchedTagsChanged
-            this.errorTagAggregator = textCreationListener.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
+            // Different hosts register their squiggle/diagnostics tagger at different scopes:
+            // C#/JS only expose it at the VIEW level (IViewTaggerProvider), while SQL only
+            // exposes it at the BUFFER level (classic ITaggerProvider) - confirmed empirically,
+            // view is not a strict superset of buffer here. Query both; the view-level one is
+            // tried first in UpdateStatusBarInfoAsync, with the buffer-level one as a fallback.
+            this.errorTagAggregator = textCreationListener.ViewTagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView);
             this.errorTagAggregator.BatchedTagsChanged += this.OnBatchedTagsChanged;
+            this.bufferErrorTagAggregator = textCreationListener.TagAggregatorFactoryService.CreateTagAggregator<IErrorTag>(textView.TextBuffer);
+            this.bufferErrorTagAggregator.BatchedTagsChanged += this.OnBatchedTagsChanged;
             // - CaretPositionChanged
             textView.Closed += OnTextViewClosed;
             textView.Caret.PositionChanged += this.OnCaretPositionChanged;
@@ -83,10 +95,16 @@
             {
                 SnapshotSpan currentSnapshotSpan = new SnapshotSpan(caretBufferPosn, 0);
                 var errorTagList = this.errorTagAggregator.GetTags(currentSnapshotSpan).ToList();
+                if (errorTagList.Count == 0)
+                {
+                    // Fall back to the buffer-level aggregator for hosts (e.g. SQL) that register
+                    // their diagnostics tagger there instead of at the view level.
+                    errorTagList = this.bufferErrorTagAggregator.GetTags(currentSnapshotSpan).ToList();
+                }
                 if (errorTagList.Count > 0)
                 {
                     // Error tags exist at this location
-                    ShowErrorTagInfo(errorTagList);
+                    await ShowErrorTagInfoAsync(errorTagList, caretBufferPosn);
                     return;
                 }
             }
@@ -107,21 +125,11 @@
                     return;
                 }
 
-                CancellationToken cancellationToken = new CancellationToken();
-                // TODO: Run asynchronously
-                Task<QuickInfoItemsCollection> task = quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
-                QuickInfoItemsCollection info = await task;
-                if (info != null)
+                string quickInfoText = await GetQuickInfoTextAsync(caretBufferPosn, trackingPoint);
+                if (quickInfoText != null)
                 {
-                    IEnumerable<object> infoItems = info.Items;
-                    List<object> itemsList = infoItems.ToList();
-                    if (itemsList[0] is ContainerElement containerElem)
-                    {
-                        ContainerElement containerWithImageAndText = GetContainerElementWithImageAndText(containerElem);
-                        string rawText = GetTextFromContainer(containerWithImageAndText);
-                        UpdateStatusBarText(rawText);
-                        return;
-                    }
+                    UpdateStatusBarText(quickInfoText);
+                    return;
                 }
             }
 
@@ -199,7 +207,30 @@
             return null;
         }
 
-        private void ShowErrorTagInfo(List<IMappingTagSpan<IErrorTag>> errorTagList)
+        private async Task<string> GetQuickInfoTextAsync(SnapshotPoint bufferPosition, ITrackingPoint trackingPoint = null)
+        {
+            if (trackingPoint == null)
+            {
+                trackingPoint = bufferPosition.Snapshot.CreateTrackingPoint(bufferPosition.Position, PointTrackingMode.Positive);
+            }
+
+            CancellationToken cancellationToken = new CancellationToken();
+            QuickInfoItemsCollection info = await quickInfoBroker.GetQuickInfoItemsAsync(textView, trackingPoint, cancellationToken);
+            if (info == null) return null;
+
+            List<object> itemsList = info.Items.ToList();
+            if (itemsList.Count == 0) return null;
+
+            if (itemsList[0] is ContainerElement containerElem)
+            {
+                ContainerElement containerWithImageAndText = GetContainerElementWithImageAndText(containerElem);
+                return GetTextFromContainer(containerWithImageAndText);
+            }
+
+            return null;
+        }
+
+        private async Task ShowErrorTagInfoAsync(List<IMappingTagSpan<IErrorTag>> errorTagList, SnapshotPoint caretBufferPosn)
         {
             // Optimisation: ErrorTags list is usually empty (or one). List of known error types is 6+ items.
             // Therefore, avoid iterating through the error type list where possible.
@@ -208,7 +239,7 @@
             // If more than one error tag. Show highest priority error.
             IMappingTagSpan<IErrorTag> mappingTagSpan = (errorTagList.Count > 1) ? GetHighestPriorityErrorTag(errorTagList) : errorTagList[0];
 
-            this.UpdateStatusBarFromErrorTag(mappingTagSpan);
+            await this.UpdateStatusBarFromErrorTagAsync(mappingTagSpan, caretBufferPosn);
         }
 
         private IMappingTagSpan<IErrorTag> GetHighestPriorityErrorTag(List<IMappingTagSpan<IErrorTag>> mappingTagSpans)
@@ -221,13 +252,98 @@
                 .FirstOrDefault(firstMatchingTag => firstMatchingTag != null);
         }
 
-        private void UpdateStatusBarFromErrorTag(IMappingTagSpan<IErrorTag> mappingTagSpan)
+        private async Task UpdateStatusBarFromErrorTagAsync(IMappingTagSpan<IErrorTag> mappingTagSpan, SnapshotPoint caretBufferPosn)
         {
             // Extract the message from the tool tip content (Note: Might return null)
             string errorTagContent = GetTextFromTagToolTip(mappingTagSpan);
 
+            if (string.IsNullOrWhiteSpace(errorTagContent))
+            {
+                // Some hosts (e.g. SQL) populate the squiggle but leave ErrorTag.ToolTipContent
+                // empty; the same message is often still available via the QuickInfo hover
+                // source for this caret position, so try that before giving up on showing
+                // anything at all.
+                errorTagContent = await GetQuickInfoTextAsync(caretBufferPosn);
+            }
+
+            if (string.IsNullOrWhiteSpace(errorTagContent))
+            {
+                // Last resort: some hosts (SQL's syntax-error squiggles, at least) populate
+                // neither ToolTipContent nor the async QuickInfo broker. We already know exactly
+                // which diagnostic this is from the tag's own mapped span, so look it up in the
+                // Error List by matching that precise position - this isn't a guess the way an
+                // Error-List-only approach would be, since the tag already confirmed the caret is
+                // on this specific error.
+                errorTagContent = GetErrorMessageFromErrorListForTag(mappingTagSpan);
+            }
+
             // Update the status bar
             UpdateStatusBarText(errorTagContent);
+        }
+
+        private string GetErrorMessageFromErrorListForTag(IMappingTagSpan<IErrorTag> mappingTagSpan)
+        {
+            try
+            {
+                NormalizedSnapshotSpanCollection spans = mappingTagSpan.Span.GetSpans(this.textView.TextBuffer);
+                if (spans.Count == 0) return null;
+                SnapshotPoint tagStart = spans[0].Start;
+
+                IErrorList errorList = this.textCreationListener.ErrorListService;
+                IWpfTableControl tableControl = errorList?.TableControl;
+                if (tableControl == null) return null;
+
+                if (!this.textView.TextBuffer.Properties.TryGetProperty(typeof(ITextDocument), out ITextDocument textDocument)
+                    || string.IsNullOrEmpty(textDocument.FilePath))
+                {
+                    return null;
+                }
+
+                ITextSnapshotLine tagLine = tagStart.GetContainingLine();
+                int tagLineZeroBased = tagLine.LineNumber;
+                int tagColumnZeroBased = tagStart.Position - tagLine.Start.Position;
+
+                foreach (ITableEntryHandle entry in tableControl.Entries)
+                {
+                    if (!entry.TryGetValue(StandardTableKeyNames.DocumentName, out object documentNameObj)
+                        || !(documentNameObj is string documentName)
+                        || !string.Equals(documentName, textDocument.FilePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!entry.TryGetValue(StandardTableKeyNames.Line, out object lineObj)
+                        || !(lineObj is int line)
+                        || line != tagLineZeroBased)
+                    {
+                        continue;
+                    }
+
+                    // Match the exact start column reported by the tag itself, rather than
+                    // guessing by proximity - we already know this is the right diagnostic.
+                    if (entry.TryGetValue(StandardTableKeyNames.Column, out object columnObj)
+                        && columnObj is int column
+                        && column != tagColumnZeroBased)
+                    {
+                        continue;
+                    }
+
+                    if (entry.TryGetValue(StandardTableKeyNames.Text, out object textObj)
+                        && textObj is string message
+                        && !string.IsNullOrWhiteSpace(message))
+                    {
+                        return message.Trim();
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception)
+            {
+                // Same policy as GetTextFromTagToolTip: don't let a lookup failure here be noisy;
+                // this can run on essentially every caret move.
+                return null;
+            }
         }
 
         private void UpdateStatusBarText(string newText)
@@ -292,12 +408,27 @@
 
         private void SetStatusBarText(string textToDisplay)
         {
+            var statusBar = this.textCreationListener.StatusBarService;
+
+            // The status bar can be silently overwritten by other VS operations (background
+            // indexing, Copilot status, etc.) unless we freeze it after writing. Unfreeze first
+            // in case a previous call left it frozen, so our new text can actually be applied.
+            Marshal.ThrowExceptionForHR(statusBar.IsFrozen(out int frozen));
+            if (frozen != 0)
+            {
+                Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(0));
+            }
+
             // Don't set the status bar text if it's already set.
             // Note: Costs a GetText operation. Is this faster than SetText?
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
-            if (currentStatusBarText.Equals(textToDisplay)) return;
+            Marshal.ThrowExceptionForHR(statusBar.GetText(out string currentStatusBarText));
+            if (!currentStatusBarText.Equals(textToDisplay))
+            {
+                Marshal.ThrowExceptionForHR(statusBar.SetText(textToDisplay));
+            }
 
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.SetText(textToDisplay));
+            // Freeze the status bar so our text sticks until we explicitly change it again.
+            Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(1));
             this.textCreationListener.LastStatusBarText = textToDisplay;
         }
 
@@ -306,13 +437,22 @@
             // Don't bother clearing the status bar if we didn't set anything
             if (string.IsNullOrEmpty(this.textCreationListener.LastStatusBarText)) return;
 
+            var statusBar = this.textCreationListener.StatusBarService;
+
+            // Unfreeze before checking/clearing - we may have frozen it ourselves in SetStatusBarText.
+            Marshal.ThrowExceptionForHR(statusBar.IsFrozen(out int frozen));
+            if (frozen != 0)
+            {
+                Marshal.ThrowExceptionForHR(statusBar.FreezeOutput(0));
+            }
+
             // Don't clear the status bar if there's nothing in it or if it's not the last error text
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.GetText(out string currentStatusBarText));
+            Marshal.ThrowExceptionForHR(statusBar.GetText(out string currentStatusBarText));
             if (string.IsNullOrEmpty(currentStatusBarText) ||
                 !string.Equals(currentStatusBarText, this.textCreationListener.LastStatusBarText)) return;
 
             // The text in the status bar is the text last set. Can safely clear it.
-            Marshal.ThrowExceptionForHR(this.textCreationListener.StatusBarService.Clear());
+            Marshal.ThrowExceptionForHR(statusBar.Clear());
             this.textCreationListener.LastStatusBarText = null;
         }
 
@@ -320,6 +460,8 @@
         {
             this.errorTagAggregator.BatchedTagsChanged -= this.OnBatchedTagsChanged;
             this.errorTagAggregator.Dispose();
+            this.bufferErrorTagAggregator.BatchedTagsChanged -= this.OnBatchedTagsChanged;
+            this.bufferErrorTagAggregator.Dispose();
 
             this.textView.Closed -= this.OnTextViewClosed;
             this.textView.Caret.PositionChanged -= this.OnCaretPositionChanged;
